@@ -1,4 +1,4 @@
-\# GPU/OpenCL Kernel Performance Optimization
+# GPU/OpenCL Kernel Performance Optimization
 
 
 
@@ -54,7 +54,7 @@ The main objective is to understand practical GPU performance optimization conce
 
 
 
-\## Project Structure
+## Project Structure
 
 
 
