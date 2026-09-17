@@ -6,7 +6,7 @@ A C++ and OpenCL project focused on understanding and optimizing GPU kernel perf
 
 
 
-\## Overview
+## Overview
 
 
 
