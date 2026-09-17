@@ -1,0 +1,33 @@
+# Build directories
+build/
+out/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+*.vcxproj.user
+
+# Compiled binaries
+*.exe
+*.dll
+*.obj
+*.lib
+*.pdb
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+CTestTestfile.cmake
+install_manifest.txt
+
+# Local OpenCL dependencies
+external/
+
+# Temporary files
+tmp_*.txt
+
+# vcpkg
+vcpkg_installed/
