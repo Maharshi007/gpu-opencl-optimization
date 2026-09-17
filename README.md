@@ -50,7 +50,7 @@ The main objective is to understand practical GPU performance optimization conce
 
 
 
-\---
+---
 
 
 
