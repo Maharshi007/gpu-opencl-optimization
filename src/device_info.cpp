@@ -150,7 +150,7 @@ void print_kernel_info(
 
     std::cout << "Kernel local memory used: "
               << local_memory / 1024
-              << " KB\n";
+              << " bytes\n";
 
     clReleaseKernel(kernel);
     clReleaseProgram(program);
@@ -253,7 +253,56 @@ int main()
             std::cout << "Platform: " << platform_name << '\n';
             std::cout << "Device: " << device_name << '\n';
             std::cout << "========================================\n";
+            cl_uint compute_units = 0;
+            cl_ulong local_mem_size = 0;
+            cl_uint max_work_item_dimensions = 0;
+            cl_ulong global_mem_size = 0;
 
+            clGetDeviceInfo(
+                device,
+                CL_DEVICE_MAX_COMPUTE_UNITS,
+                sizeof(compute_units),
+                &compute_units,
+                nullptr
+            );
+
+            clGetDeviceInfo(
+                device,
+                CL_DEVICE_LOCAL_MEM_SIZE,
+                sizeof(local_mem_size),
+                &local_mem_size,
+                nullptr
+            );
+
+            clGetDeviceInfo(
+                device,
+                CL_DEVICE_MAX_WORK_ITEM_DIMENSIONS,
+                sizeof(max_work_item_dimensions),
+                &max_work_item_dimensions,
+                nullptr
+            );
+
+            clGetDeviceInfo(
+                device,
+                CL_DEVICE_GLOBAL_MEM_SIZE,
+                sizeof(global_mem_size),
+                &global_mem_size,
+                nullptr
+            );
+
+            std::cout << "Compute units: "
+                      << compute_units << '\n';
+
+            std::cout << "Device local memory: "
+                      << local_mem_size / 1024
+                      << " KB\n";
+
+            std::cout << "Max work-item dimensions: "
+                      << max_work_item_dimensions << '\n';
+
+            std::cout << "Global memory: "
+                      << global_mem_size / (1024 * 1024)
+                      << " MB\n";
             cl_context context = clCreateContext(
                 nullptr,
                 1,

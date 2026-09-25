@@ -11,43 +11,111 @@
 #include <string>
 #include <vector>
 
-int main() {
-    constexpr int N = 1024;
+constexpr int TILE_SIZE = 8;
+constexpr int MATRIX_SIZE = 1024;
+constexpr int WARMUP_RUNS = 1;
+constexpr int BENCHMARK_RUNS = 20;
 
-    constexpr int TILE_SIZE = 8;
+struct BenchmarkResult {
+    int tile_size = 0;
 
-    constexpr int WARMUP_RUNS = 1;
-    constexpr int BENCHMARK_RUNS = 20;
+    double average_ms = 0.0;
+    double median_ms = 0.0;
+    double min_ms = 0.0;
+    double max_ms = 0.0;
 
+    double checksum = 0.0;
+
+    bool validation_passed = false;
+    bool execution_success = false;
+};
+
+
+// ============================================================
+// Run one complete tiled OpenCL benchmark.
+// ============================================================
+BenchmarkResult run_benchmark(int tile_size) {
+
+    BenchmarkResult result;
+    result.tile_size = tile_size;
+
+    constexpr int N = MATRIX_SIZE;
+
+    // --------------------------------------------------------
+    // 1. Validate tile size.
+    // --------------------------------------------------------
+    if (tile_size <= 0) {
+        std::cerr
+            << "Error: Tile size must be positive.\n";
+
+        return result;
+    }
+
+    if (N % tile_size != 0) {
+        std::cerr
+            << "Error: Tile size "
+            << tile_size
+            << " does not evenly divide matrix size "
+            << N
+            << ".\n";
+
+        return result;
+    }
+
+    const size_t work_items_per_group =
+        static_cast<size_t>(tile_size) *
+        static_cast<size_t>(tile_size);
+
+    if (work_items_per_group > 256) {
+        std::cerr
+            << "Error: Tile size "
+            << tile_size
+            << " creates "
+            << work_items_per_group
+            << " work-items per work-group.\n"
+            << "Maximum supported work-group size for this "
+            << "benchmark is 256.\n";
+
+        return result;
+    }
+
+    // --------------------------------------------------------
+    // 2. Allocate matrices.
+    // --------------------------------------------------------
     const size_t matrix_elements =
-        static_cast<size_t>(N) * N;
+        static_cast<size_t>(N) *
+        static_cast<size_t>(N);
 
     const size_t matrix_bytes =
-        matrix_elements * sizeof(float);
+        matrix_elements *
+        sizeof(float);
 
-    // ------------------------------------------------------------
-    // 1. Allocate matrices.
-    // ------------------------------------------------------------
     std::vector<float> A(matrix_elements);
     std::vector<float> B(matrix_elements);
     std::vector<float> C(matrix_elements, 0.0f);
 
-    // Same deterministic input as CPU and naive GPU baselines.
+    // Same deterministic input used by the CPU and naive GPU
+    // baselines.
     for (int i = 0; i < N; ++i) {
         for (int j = 0; j < N; ++j) {
+
             A[i * N + j] =
-                static_cast<float>((i + j) % 100);
+                static_cast<float>(
+                    (i + j) % 100
+                );
 
             B[i * N + j] =
-                static_cast<float>((i - j + 100) % 100);
+                static_cast<float>(
+                    (i - j + 100) % 100
+                );
         }
     }
 
     cl_int err = CL_SUCCESS;
 
-    // ------------------------------------------------------------
-    // 2. Find OpenCL platforms.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 3. Find OpenCL platforms.
+    // --------------------------------------------------------
     cl_uint num_platforms = 0;
 
     err = clGetPlatformIDs(
@@ -57,9 +125,11 @@ int main() {
     );
 
     if (err != CL_SUCCESS || num_platforms == 0) {
+
         std::cerr
             << "Error: No OpenCL platforms found.\n";
-        return 1;
+
+        return result;
     }
 
     std::vector<cl_platform_id> platforms(
@@ -73,14 +143,17 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not get OpenCL platforms.\n";
-        return 1;
+
+        return result;
     }
 
     cl_platform_id selected_platform = nullptr;
 
     for (cl_platform_id platform : platforms) {
+
         size_t name_size = 0;
 
         clGetPlatformInfo(
@@ -118,14 +191,16 @@ int main() {
     }
 
     if (selected_platform == nullptr) {
+
         std::cerr
             << "Error: NVIDIA OpenCL platform not found.\n";
-        return 1;
+
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 3. Select NVIDIA GPU device.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 4. Select NVIDIA GPU device.
+    // --------------------------------------------------------
     cl_device_id device = nullptr;
 
     err = clGetDeviceIDs(
@@ -137,9 +212,11 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not find NVIDIA GPU device.\n";
-        return 1;
+
+        return result;
     }
 
     char device_name[256] = {};
@@ -157,9 +234,44 @@ int main() {
         << device_name
         << '\n';
 
-    // ------------------------------------------------------------
-    // 4. Create OpenCL context.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 5. Query maximum work-group size.
+    // --------------------------------------------------------
+    size_t max_work_group_size = 0;
+
+    err = clGetDeviceInfo(
+        device,
+        CL_DEVICE_MAX_WORK_GROUP_SIZE,
+        sizeof(size_t),
+        &max_work_group_size,
+        nullptr
+    );
+
+    if (err != CL_SUCCESS) {
+
+        std::cerr
+            << "Error: Could not query maximum work-group size.\n";
+
+        return result;
+    }
+
+    if (work_items_per_group > max_work_group_size) {
+
+        std::cerr
+            << "Error: Tile size "
+            << tile_size
+            << " requires "
+            << work_items_per_group
+            << " work-items, but device supports only "
+            << max_work_group_size
+            << ".\n";
+
+        return result;
+    }
+
+    // --------------------------------------------------------
+    // 6. Create OpenCL context.
+    // --------------------------------------------------------
     cl_context context =
         clCreateContext(
             nullptr,
@@ -170,15 +282,20 @@ int main() {
             &err
         );
 
-    if (err != CL_SUCCESS || context == nullptr) {
+    if (
+        err != CL_SUCCESS ||
+        context == nullptr
+    ) {
+
         std::cerr
             << "Error: Could not create OpenCL context.\n";
-        return 1;
+
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 5. Create command queue with profiling enabled.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 7. Create command queue with profiling enabled.
+    // --------------------------------------------------------
     cl_command_queue queue =
         clCreateCommandQueue(
             context,
@@ -187,30 +304,35 @@ int main() {
             &err
         );
 
-    if (err != CL_SUCCESS || queue == nullptr) {
+    if (
+        err != CL_SUCCESS ||
+        queue == nullptr
+    ) {
+
         std::cerr
             << "Error: Could not create command queue.\n";
 
         clReleaseContext(context);
 
-        return 1;
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 6. Load tiled OpenCL kernel.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 8. Load tiled OpenCL kernel.
+    // --------------------------------------------------------
     std::ifstream kernel_file(
         "kernels/matrix_mul_tiled.cl"
     );
 
     if (!kernel_file) {
+
         std::cerr
             << "Error: Could not open tiled kernel file.\n";
 
         clReleaseCommandQueue(queue);
         clReleaseContext(context);
 
-        return 1;
+        return result;
     }
 
     std::stringstream kernel_stream;
@@ -218,7 +340,7 @@ int main() {
     kernel_stream
         << kernel_file.rdbuf();
 
-    std::string kernel_source =
+    const std::string kernel_source =
         kernel_stream.str();
 
     const char* source =
@@ -227,9 +349,9 @@ int main() {
     const size_t source_size =
         kernel_source.size();
 
-    // ------------------------------------------------------------
-    // 7. Create and build OpenCL program.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 9. Create OpenCL program.
+    // --------------------------------------------------------
     cl_program program =
         clCreateProgramWithSource(
             context,
@@ -240,18 +362,22 @@ int main() {
         );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not create OpenCL program.\n";
 
         clReleaseCommandQueue(queue);
         clReleaseContext(context);
 
-        return 1;
+        return result;
     }
 
+    // --------------------------------------------------------
+    // 10. Compile kernel with runtime-selected tile size.
+    // --------------------------------------------------------
     const std::string build_options =
         "-DTILE_SIZE=" +
-        std::to_string(TILE_SIZE);
+        std::to_string(tile_size);
 
     err = clBuildProgram(
         program,
@@ -263,6 +389,7 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not build tiled kernel.\n";
 
@@ -299,12 +426,12 @@ int main() {
         clReleaseCommandQueue(queue);
         clReleaseContext(context);
 
-        return 1;
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 8. Create kernel object.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 11. Create kernel object.
+    // --------------------------------------------------------
     cl_kernel kernel =
         clCreateKernel(
             program,
@@ -313,6 +440,7 @@ int main() {
         );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not create tiled kernel.\n";
 
@@ -320,12 +448,12 @@ int main() {
         clReleaseCommandQueue(queue);
         clReleaseContext(context);
 
-        return 1;
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 9. Create GPU buffers.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 12. Create GPU buffers.
+    // --------------------------------------------------------
     cl_mem buffer_A =
         clCreateBuffer(
             context,
@@ -336,9 +464,16 @@ int main() {
         );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not create buffer A.\n";
-        return 1;
+
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+        clReleaseCommandQueue(queue);
+        clReleaseContext(context);
+
+        return result;
     }
 
     cl_mem buffer_B =
@@ -351,9 +486,17 @@ int main() {
         );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not create buffer B.\n";
-        return 1;
+
+        clReleaseMemObject(buffer_A);
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+        clReleaseCommandQueue(queue);
+        clReleaseContext(context);
+
+        return result;
     }
 
     cl_mem buffer_C =
@@ -366,14 +509,23 @@ int main() {
         );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not create buffer C.\n";
-        return 1;
+
+        clReleaseMemObject(buffer_A);
+        clReleaseMemObject(buffer_B);
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+        clReleaseCommandQueue(queue);
+        clReleaseContext(context);
+
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 10. Copy input matrices to GPU.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 13. Copy input matrices to GPU.
+    // --------------------------------------------------------
     err = clEnqueueWriteBuffer(
         queue,
         buffer_A,
@@ -387,9 +539,19 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not copy matrix A to GPU.\n";
-        return 1;
+
+        clReleaseMemObject(buffer_A);
+        clReleaseMemObject(buffer_B);
+        clReleaseMemObject(buffer_C);
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+        clReleaseCommandQueue(queue);
+        clReleaseContext(context);
+
+        return result;
     }
 
     err = clEnqueueWriteBuffer(
@@ -405,14 +567,24 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not copy matrix B to GPU.\n";
-        return 1;
+
+        clReleaseMemObject(buffer_A);
+        clReleaseMemObject(buffer_B);
+        clReleaseMemObject(buffer_C);
+        clReleaseKernel(kernel);
+        clReleaseProgram(program);
+        clReleaseCommandQueue(queue);
+        clReleaseContext(context);
+
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 11. Set kernel arguments.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 14. Set kernel arguments.
+    // --------------------------------------------------------
     err = clSetKernelArg(
         kernel,
         0,
@@ -421,9 +593,11 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not set kernel argument A.\n";
-        return 1;
+
+        return result;
     }
 
     err = clSetKernelArg(
@@ -434,9 +608,11 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not set kernel argument B.\n";
-        return 1;
+
+        return result;
     }
 
     err = clSetKernelArg(
@@ -447,9 +623,11 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not set kernel argument C.\n";
-        return 1;
+
+        return result;
     }
 
     err = clSetKernelArg(
@@ -460,30 +638,34 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not set kernel argument N.\n";
-        return 1;
+
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 12. Define global and local work sizes.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 15. Define global and local work sizes.
+    // --------------------------------------------------------
     const size_t global_work_size[2] = {
         static_cast<size_t>(N),
         static_cast<size_t>(N)
     };
 
     const size_t local_work_size[2] = {
-        static_cast<size_t>(TILE_SIZE),
-        static_cast<size_t>(TILE_SIZE)
+        static_cast<size_t>(tile_size),
+        static_cast<size_t>(tile_size)
     };
 
-    // ------------------------------------------------------------
-    // 13. Warm-up run.
-    // ------------------------------------------------------------
-    for (int run = 0;
-         run < WARMUP_RUNS;
-         ++run) {
+    // --------------------------------------------------------
+    // 16. Warm-up run.
+    // --------------------------------------------------------
+    for (
+        int run = 0;
+        run < WARMUP_RUNS;
+        ++run
+    ) {
 
         err = clEnqueueNDRangeKernel(
             queue,
@@ -498,26 +680,30 @@ int main() {
         );
 
         if (err != CL_SUCCESS) {
+
             std::cerr
                 << "Error: Could not launch warm-up kernel.\n";
-            return 1;
+
+            return result;
         }
     }
 
     clFinish(queue);
 
-    // ------------------------------------------------------------
-    // 14. Repeated benchmark.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 17. Repeated benchmark.
+    // --------------------------------------------------------
     std::vector<double> kernel_times_ms;
 
     kernel_times_ms.reserve(
         BENCHMARK_RUNS
     );
 
-    for (int run = 0;
-         run < BENCHMARK_RUNS;
-         ++run) {
+    for (
+        int run = 0;
+        run < BENCHMARK_RUNS;
+        ++run
+    ) {
 
         cl_event kernel_event = nullptr;
 
@@ -534,9 +720,11 @@ int main() {
         );
 
         if (err != CL_SUCCESS) {
+
             std::cerr
                 << "Error: Could not launch benchmark kernel.\n";
-            return 1;
+
+            return result;
         }
 
         clFinish(queue);
@@ -553,12 +741,13 @@ int main() {
         );
 
         if (err != CL_SUCCESS) {
+
             std::cerr
                 << "Error: Could not get kernel start time.\n";
 
             clReleaseEvent(kernel_event);
 
-            return 1;
+            return result;
         }
 
         err = clGetEventProfilingInfo(
@@ -570,12 +759,13 @@ int main() {
         );
 
         if (err != CL_SUCCESS) {
+
             std::cerr
                 << "Error: Could not get kernel end time.\n";
 
             clReleaseEvent(kernel_event);
 
-            return 1;
+            return result;
         }
 
         const double kernel_time_ms =
@@ -590,9 +780,9 @@ int main() {
         clReleaseEvent(kernel_event);
     }
 
-    // ------------------------------------------------------------
-    // 15. Calculate benchmark statistics.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 18. Calculate benchmark statistics.
+    // --------------------------------------------------------
     double total_time_ms = 0.0;
 
     double min_time_ms =
@@ -602,6 +792,7 @@ int main() {
         kernel_times_ms[0];
 
     for (double time_ms : kernel_times_ms) {
+
         total_time_ms += time_ms;
 
         min_time_ms =
@@ -634,6 +825,7 @@ int main() {
     double median_time_ms = 0.0;
 
     if (BENCHMARK_RUNS % 2 == 0) {
+
         median_time_ms =
             (
                 sorted_times[
@@ -643,16 +835,18 @@ int main() {
                     BENCHMARK_RUNS / 2
                 ]
             ) / 2.0;
+
     } else {
+
         median_time_ms =
             sorted_times[
                 BENCHMARK_RUNS / 2
             ];
     }
 
-    // ------------------------------------------------------------
-    // 16. Copy result from GPU to CPU.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 19. Copy result from GPU to CPU.
+    // --------------------------------------------------------
     err = clEnqueueReadBuffer(
         queue,
         buffer_C,
@@ -666,30 +860,61 @@ int main() {
     );
 
     if (err != CL_SUCCESS) {
+
         std::cerr
             << "Error: Could not read result from GPU.\n";
-        return 1;
+
+        return result;
     }
 
-    // ------------------------------------------------------------
-    // 17. Calculate checksum.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 20. Calculate checksum.
+    // --------------------------------------------------------
     double checksum = 0.0;
 
     for (float value : C) {
         checksum += value;
     }
 
-    // Verified independently using the 1024x1024 CPU baseline.
+    // Independently verified CPU baseline checksum.
     const double expected_checksum =
         488745369600.0;
 
     const double tolerance =
         100000.0;
 
-    // ------------------------------------------------------------
-    // 18. Print benchmark results.
-    // ------------------------------------------------------------
+    const bool validation_passed =
+        std::abs(
+            checksum - expected_checksum
+        ) <= tolerance;
+
+    // --------------------------------------------------------
+    // 21. Store benchmark result.
+    // --------------------------------------------------------
+    result.average_ms =
+        average_time_ms;
+
+    result.median_ms =
+        median_time_ms;
+
+    result.min_ms =
+        min_time_ms;
+
+    result.max_ms =
+        max_time_ms;
+
+    result.checksum =
+        checksum;
+
+    result.validation_passed =
+        validation_passed;
+
+    result.execution_success =
+        true;
+
+    // --------------------------------------------------------
+    // 22. Print benchmark results.
+    // --------------------------------------------------------
     std::cout
         << std::fixed
         << std::setprecision(3);
@@ -706,9 +931,14 @@ int main() {
 
     std::cout
         << "Tile size: "
-        << TILE_SIZE
+        << tile_size
         << " x "
-        << TILE_SIZE
+        << tile_size
+        << '\n';
+
+    std::cout
+        << "Work-items per work-group: "
+        << work_items_per_group
         << '\n';
 
     std::cout
@@ -741,28 +971,24 @@ int main() {
         << checksum
         << '\n';
 
-    // ------------------------------------------------------------
-    // 19. Validation result.
-    // ------------------------------------------------------------
-    if (
-        std::abs(
-            checksum - expected_checksum
-        ) <= tolerance
-    ) {
+    if (validation_passed) {
+
         std::cout
             << "GPU tiled result validation successful!\n";
+
     } else {
+
         std::cout
-            << "Warning: GPU tiled checksum differs "
+            << "WARNING: GPU tiled checksum differs "
             << "from CPU baseline.\n";
     }
 
     std::cout
         << "==========================================\n";
 
-    // ------------------------------------------------------------
-    // 20. Release OpenCL resources.
-    // ------------------------------------------------------------
+    // --------------------------------------------------------
+    // 23. Release OpenCL resources.
+    // --------------------------------------------------------
     clReleaseMemObject(buffer_A);
     clReleaseMemObject(buffer_B);
     clReleaseMemObject(buffer_C);
@@ -773,5 +999,190 @@ int main() {
     clReleaseCommandQueue(queue);
     clReleaseContext(context);
 
-    return 0;
+    return result;
+}
+
+
+// ============================================================
+// Save benchmark results to CSV.
+// ============================================================
+bool save_results_to_csv(
+    const std::vector<BenchmarkResult>& results
+) {
+
+    std::ofstream csv_file(
+        "results/tile_sweep.csv"
+    );
+
+    if (!csv_file) {
+
+        std::cerr
+            << "Error: Could not open "
+            << "results/tile_sweep.csv for writing.\n";
+
+        return false;
+    }
+
+    csv_file
+        << "implementation,"
+        << "tile_size,"
+        << "work_items_per_group,"
+        << "matrix_size,"
+        << "benchmark_runs,"
+        << "average_ms,"
+        << "median_ms,"
+        << "min_ms,"
+        << "max_ms,"
+        << "checksum,"
+        << "validation\n";
+
+    csv_file
+        << std::fixed
+        << std::setprecision(3);
+
+    for (const BenchmarkResult& result : results) {
+
+        const int work_items_per_group =
+            result.tile_size *
+            result.tile_size;
+
+        csv_file
+            << "tiled_gpu,"
+            << result.tile_size
+            << ","
+            << work_items_per_group
+            << ","
+            << MATRIX_SIZE
+            << "x"
+            << MATRIX_SIZE
+            << ","
+            << BENCHMARK_RUNS
+            << ","
+            << result.average_ms
+            << ","
+            << result.median_ms
+            << ","
+            << result.min_ms
+            << ","
+            << result.max_ms
+            << ","
+            << result.checksum
+            << ","
+            << (
+                result.validation_passed
+                    ? "pass"
+                    : "fail"
+            )
+            << '\n';
+    }
+
+    csv_file.close();
+
+    std::cout
+        << "\nSweep results saved to:\n"
+        << "results/tile_sweep.csv\n";
+
+    return true;
+}
+
+
+// ============================================================
+// Program entry point.
+// ============================================================
+int main(int argc, char* argv[]) {
+
+    // --------------------------------------------------------
+    // No argument:
+    // Run the default 8x8 configuration.
+    // --------------------------------------------------------
+    if (argc <= 1) {
+
+        BenchmarkResult result =
+            run_benchmark(TILE_SIZE);
+
+        return result.execution_success
+            ? 0
+            : 1;
+    }
+
+    const std::string argument =
+        argv[1];
+
+    // --------------------------------------------------------
+    // Sweep mode:
+    // Test 4x4, 8x8 and 16x16.
+    // --------------------------------------------------------
+    if (argument == "sweep") {
+
+        const std::vector<int> tile_sizes = {
+            4,
+            8,
+            16
+        };
+
+        std::vector<BenchmarkResult> results;
+
+        results.reserve(
+            tile_sizes.size()
+        );
+
+        for (int tile_size : tile_sizes) {
+
+            BenchmarkResult result =
+                run_benchmark(tile_size);
+
+            if (!result.execution_success) {
+
+                std::cerr
+                    << "Error: Benchmark failed for tile size "
+                    << tile_size
+                    << ".\n";
+
+                return 1;
+            }
+
+            results.push_back(result);
+        }
+
+        if (!save_results_to_csv(results)) {
+            return 1;
+        }
+
+        return 0;
+    }
+
+    // --------------------------------------------------------
+    // Numeric tile size:
+    // Example:
+    // matrix_gpu_tiled.exe 16
+    // --------------------------------------------------------
+    try {
+
+        const int tile_size =
+            std::stoi(argument);
+
+        BenchmarkResult result =
+            run_benchmark(tile_size);
+
+        return result.execution_success
+            ? 0
+            : 1;
+
+    } catch (const std::exception&) {
+
+        std::cerr
+            << "Invalid tile size: "
+            << argument
+            << '\n';
+
+        std::cerr
+            << "\nUsage:\n"
+            << "  matrix_gpu_tiled.exe\n"
+            << "  matrix_gpu_tiled.exe 4\n"
+            << "  matrix_gpu_tiled.exe 8\n"
+            << "  matrix_gpu_tiled.exe 16\n"
+            << "  matrix_gpu_tiled.exe sweep\n";
+
+        return 1;
+    }
 }
